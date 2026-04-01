@@ -46,7 +46,7 @@ fn listen_and_decrypt(server_url: &str, topic: String) -> Result<(), Box<dyn std
         let value = json::parse(&line)?;
         let msg = &value["message"].as_str().unwrap_or("");
         if msg.contains("-----BEGIN PGP MESSAGE-----") {
-            println!("notification received, decrypting.");
+            println!("notification received, decrypting..");
             let notifcation = decrypt_msg(msg.to_string(), private_key.clone())?;
             println!("notification is \"{}\"", &notifcation);
             let _ = Notification::new()
