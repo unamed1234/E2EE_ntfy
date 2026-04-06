@@ -26,39 +26,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "\"{} genkey\" generates your keypair (run this first)",
             args[0]
         );
-        println!("two subcommands are possible send and listento");
         println!("usage for send is {} send \"<message>\" <topic>", args[0]);
         println!("usage for listen is {} listen <topic>", args[0]);
         return Ok(());
-    } else if args[1] == "listen" {
-        let _ = listen_and_decrypt(server_url, args[2].clone());
-    } else if args[1] == "send" {
-        let encrypted = encrypt_2_key(args[2].clone().into_bytes().to_vec());
-        let topic = args[3].clone();
-        let agent = ureq::agent();
-        let res = agent
-            .post(format!("{server_url}{topic}"))
-            .send(encrypted?.as_bytes());
-        println!("{:?}", res);
-    } else if args[1] == "genkey" {
-        println!("generating key");
-        let home = env::var("HOME").expect("home not set");
-        let (secretkey, pubkey) = gen_keypair();
-        let mut path = PathBuf::from(&home);
-        path.push(".config/e2ee_ntfy");
-        std::fs::create_dir_all(&path).unwrap_or(());
-        let mut secretkeyfile = File::create(format!("{}/.config/e2ee_ntfy/secretkey.asc", &home))?;
-        let mut pubkeyfile = File::create(format!("{}/.config/e2ee_ntfy/publicKey.asc", &home))?;
-        let _ = pubkey.to_writer_with_header(&mut pubkeyfile);
-        let _ = secretkey.to_writer_with_header(&mut secretkeyfile);
-    } else {
-        println!("wrong usage run without args to get usage");
+    }
+
+    match args[1].as_ref() {
+        "send" => {
+            let encrypted = encrypt_2_key(args[2].clone().into_bytes().to_vec());
+            let topic = args[3].clone();
+            let agent = ureq::agent();
+            let res = agent
+                .post(format!("{server_url}{topic}"))
+                .send(encrypted?.as_bytes());
+            println!("{:?}", res);
+        }
+        "listen" => listen_and_decrypt(server_url, args[2].clone())?,
+        "genkey" => {
+            println!("generating key");
+            let home = env!("HOME");
+            let (secretkey, pubkey) = gen_keypair();
+            let mut path = PathBuf::from(&home);
+            path.push(".config/e2ee_ntfy");
+            std::fs::create_dir_all(&path).unwrap_or(());
+            let mut secretkeyfile =
+                File::create(format!("{}/.config/e2ee_ntfy/secretkey.asc", &home))?;
+            let mut pubkeyfile =
+                File::create(format!("{}/.config/e2ee_ntfy/publicKey.asc", &home))?;
+            let _ = pubkey.to_writer_with_header(&mut pubkeyfile);
+            let _ = secretkey.to_writer_with_header(&mut secretkeyfile);
+        }
+        _ => println!("wrong usage run without args to get usage"),
     }
     Ok(())
 }
 
 fn listen_and_decrypt(server_url: &str, topic: String) -> Result<(), Box<dyn std::error::Error>> {
-    let home = env::var("HOME").expect("home not set");
+    let home = env!("HOME");
     let private_key = pgp::composed::SignedSecretKey::from_file(format!(
         "{}/.config/e2ee_ntfy/secretkey.asc",
         home
@@ -85,7 +89,7 @@ fn listen_and_decrypt(server_url: &str, topic: String) -> Result<(), Box<dyn std
 }
 
 fn encrypt_2_key(plain: Vec<u8>) -> Result<String, Box<dyn std::error::Error>> {
-    let home = env::var("HOME").expect("home not set");
+    let home = env!("HOME");
     let mut rng = thread_rng();
     let pubkey = pgp::composed::SignedPublicKey::from_file(format!(
         "{}/.config/e2ee_ntfy/publicKey.asc",
