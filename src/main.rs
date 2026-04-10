@@ -4,11 +4,8 @@ use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::packet::PacketTrait;
 use pgp::{
     composed::KeyType,
-    crypto::{hash::HashAlgorithm, public_key::PublicKeyAlgorithm},
-    packet::{
-        PubKeyInner, PublicKey, SecretKey, SignatureConfig, SignatureType, Subpacket, SubpacketData,
-    },
-    types::{KeyDetails, KeyVersion, Password, Timestamp},
+    packet::{PubKeyInner, PublicKey, SecretKey},
+    types::{KeyVersion, Password, Timestamp},
 };
 use rand::thread_rng;
 use std::env;
@@ -34,14 +31,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args[1].as_ref() {
         "send" => {
             let encrypted = encrypt_2_key(args[2].clone().into_bytes().to_vec());
-            let topic = args[3].clone();
+            let topic = &args[3];
             let agent = ureq::agent();
             let res = agent
                 .post(format!("{server_url}{topic}"))
                 .send(encrypted?.as_bytes());
             println!("{:?}", res);
         }
-        "listen" => listen_and_decrypt(server_url, args[2].clone())?,
+        "listen" => listen_and_decrypt(server_url, &args[2])?,
         "genkey" => {
             println!("generating key");
             let home = env!("HOME");
@@ -61,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn listen_and_decrypt(server_url: &str, topic: String) -> Result<(), Box<dyn std::error::Error>> {
+fn listen_and_decrypt(server_url: &str, topic: &String) -> Result<(), Box<dyn std::error::Error>> {
     let home = env!("HOME");
     let private_key = pgp::composed::SignedSecretKey::from_file(format!(
         "{}/.config/e2ee_ntfy/secretkey.asc",
@@ -118,15 +115,12 @@ fn decrypt_msg(
 
     Ok(decrypted?.decompress().unwrap().as_data_string()?)
 }
-fn gen_keypair() -> (pgp::packet::SecretKey, pgp::packet::PublicKey) {
+fn gen_keypair() -> (SecretKey, PublicKey) {
     let mut rng = thread_rng();
-
     let now = Timestamp::now();
 
-    // Generate a pair of bare key packets (a "SecretKey" and a "PublicKey").
-    // (In a composed "SignedSecretKey" or "SignedPublicKey" object,
-    // such packets would serve as primary keys.)
     let (public_params, secret_params) = KeyType::X25519.generate(&mut rng).expect("generate key");
+
     let pub_key_inner = PubKeyInner::new(
         KeyVersion::V4,
         KeyType::X25519.to_alg(),
@@ -135,17 +129,10 @@ fn gen_keypair() -> (pgp::packet::SecretKey, pgp::packet::PublicKey) {
         public_params,
     )
     .expect("create inner public key");
+
     let pub_key = PublicKey::from_inner(pub_key_inner).expect("create public key");
+
     let sec_key = SecretKey::new(pub_key.clone(), secret_params).expect("create secret key");
 
-    let mut sig_cfg = SignatureConfig::v4(
-        SignatureType::Binary,
-        PublicKeyAlgorithm::RSA,
-        HashAlgorithm::Sha256,
-    );
-    sig_cfg.hashed_subpackets = vec![
-        Subpacket::regular(SubpacketData::SignatureCreationTime(now)).unwrap(),
-        Subpacket::regular(SubpacketData::IssuerFingerprint(pub_key.fingerprint())).unwrap(),
-    ];
     (sec_key, pub_key)
 }
