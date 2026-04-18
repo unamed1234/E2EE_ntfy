@@ -1,5 +1,5 @@
 use notify_rust::Notification;
-use pgp::composed::{Deserializable, Message, MessageBuilder, SignedSecretKey};
+use pgp::composed::{Deserializable, Message, MessageBuilder, SignedPublicKey, SignedSecretKey};
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::packet::PacketTrait;
 use pgp::{
@@ -9,6 +9,7 @@ use pgp::{
 };
 use rand::thread_rng;
 use std::env;
+use std::fs;
 use std::fs::File;
 use std::io::Cursor;
 use std::io::{BufRead, BufReader};
@@ -40,8 +41,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "listen" => listen_and_decrypt(server_url, &args[2])?,
         "genkey" => {
-            println!("generating key");
             let home = env!("HOME");
+            if fs::exists(format!("{}/.config/e2ee_ntfy/secretkey.asc", home)).unwrap()
+                || fs::exists(format!("{}/.config/e2ee_ntfy/PublicKey.asc", home)).unwrap()
+            {
+                Err(
+                    "keys already exist refusing to overwrite (run rm -rf ~/.config/e2ee_ntfy/ to overide this warning.)",
+                )?
+            }
             let (secretkey, pubkey) = gen_keypair();
             let mut path = PathBuf::from(&home);
             path.push(".config/e2ee_ntfy");
@@ -52,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 File::create(format!("{}/.config/e2ee_ntfy/publicKey.asc", &home))?;
             let _ = pubkey.to_writer_with_header(&mut pubkeyfile);
             let _ = secretkey.to_writer_with_header(&mut secretkeyfile);
+            println!("keys were generated");
         }
         _ => println!("wrong usage run without args to get usage"),
     }
@@ -60,17 +68,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn listen_and_decrypt(server_url: &str, topic: &String) -> Result<(), Box<dyn std::error::Error>> {
     let home = env!("HOME");
-    let private_key = pgp::composed::SignedSecretKey::from_file(format!(
-        "{}/.config/e2ee_ntfy/secretkey.asc",
-        home
-    ))
-    .expect("no secret key");
+    let private_key = if fs::exists(format!("{}/.config/e2ee_ntfy/secretkey.asc", home)).unwrap() {
+        pgp::composed::SignedSecretKey::from_file(format!(
+            "{}/.config/e2ee_ntfy/secretkey.asc",
+            home
+        ))
+        .expect("secret key exists but is invalid.")
+    } else {
+        Err("no private key exists run genkey subcommand to generate one.")?
+    };
     let response = ureq::get(format!("{server_url}{topic}/json")).call()?;
     let reader = BufReader::new(response.into_body().into_reader());
     for line in reader.lines() {
         let line = line?;
         let value = json::parse(&line)?;
-        let msg = &value["message"].as_str().unwrap_or("");
+        let msg = value["message"].as_str().unwrap_or("");
         if msg.contains("-----BEGIN PGP MESSAGE-----") {
             println!("notification received, decrypting..");
             let notifcation = decrypt_msg(msg.to_string(), private_key.clone())?;
@@ -78,8 +90,7 @@ fn listen_and_decrypt(server_url: &str, topic: &String) -> Result<(), Box<dyn st
             let _ = Notification::new()
                 .summary("E2EE_NTFY")
                 .body(&notifcation)
-                .show()
-                .unwrap();
+                .show()?;
         }
     }
     Ok(())
@@ -88,15 +99,20 @@ fn listen_and_decrypt(server_url: &str, topic: &String) -> Result<(), Box<dyn st
 fn encrypt_2_key(plain: Vec<u8>) -> Result<String, Box<dyn std::error::Error>> {
     let home = env!("HOME");
     let mut rng = thread_rng();
-    let pubkey = pgp::composed::SignedPublicKey::from_file(format!(
-        "{}/.config/e2ee_ntfy/publicKey.asc",
-        home
-    ));
+    let pubkey: SignedPublicKey =
+        if fs::exists(format!("{}/.config/e2ee_ntfy/publicKey.asc", home)).unwrap() {
+            pgp::composed::SignedPublicKey::from_file(format!(
+                "{}/.config/e2ee_ntfy/publicKey.asc",
+                home
+            ))?
+        } else {
+            Err("no publickey exists run genkey subcommand to generate one.")?
+        };
 
     let mut builder =
         MessageBuilder::from_bytes("", plain).seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES128);
 
-    builder.encrypt_to_key(&mut rng, &pubkey.unwrap())?;
+    builder.encrypt_to_key(&mut rng, &pubkey)?;
 
     let encrypted = builder.to_armored_string(&mut rng, Default::default())?;
 
@@ -112,14 +128,15 @@ fn decrypt_msg(
     if let Err(ref e) = decrypted {
         println!("decryption error {:?}", e)
     }
-
-    Ok(decrypted?.decompress().unwrap().as_data_string()?)
+    Ok(decrypted?.decompress()?.as_data_string()?)
 }
 fn gen_keypair() -> (SecretKey, PublicKey) {
     let mut rng = thread_rng();
     let now = Timestamp::now();
 
-    let (public_params, secret_params) = KeyType::X25519.generate(&mut rng).expect("generate key");
+    let (public_params, secret_params) = KeyType::X25519
+        .generate(&mut rng)
+        .expect("error generating key");
 
     let pub_key_inner = PubKeyInner::new(
         KeyVersion::V4,
@@ -130,9 +147,10 @@ fn gen_keypair() -> (SecretKey, PublicKey) {
     )
     .expect("create inner public key");
 
-    let pub_key = PublicKey::from_inner(pub_key_inner).expect("create public key");
+    let pub_key = PublicKey::from_inner(pub_key_inner).expect("failed to create public key");
 
-    let sec_key = SecretKey::new(pub_key.clone(), secret_params).expect("create secret key");
+    let sec_key =
+        SecretKey::new(pub_key.clone(), secret_params).expect("failed to create secret key");
 
     (sec_key, pub_key)
 }
